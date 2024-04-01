@@ -1,5 +1,4 @@
 using System;
-using Coffee.UIParticleExtensions;
 using UnityEngine;
 using UnityEngine.Events;
 
@@ -22,7 +21,7 @@ namespace Coffee.UIExtensions
         }
 
         [SerializeField]
-        private ParticleSystem m_ParticleSystem;
+        private ParticleSystem[] m_ParticleSystems;
 
         [Range(0.1f, 10f)]
         [SerializeField]
@@ -45,170 +44,77 @@ namespace Coffee.UIExtensions
         [SerializeField]
         private UnityEvent m_OnAttracted;
 
-        private UIParticle _uiParticle;
-
-        public float destinationRadius
-        {
-            get => m_DestinationRadius;
-            set => m_DestinationRadius = Mathf.Clamp(value, 0.1f, 10f);
-        }
-
-        public float delay
-        {
-            get => m_DelayRate;
-            set => m_DelayRate = value;
-        }
-
-        public float maxSpeed
-        {
-            get => m_MaxSpeed;
-            set => m_MaxSpeed = value;
-        }
-
-        public Movement movement
-        {
-            get => m_Movement;
-            set => m_Movement = value;
-        }
-
-        public UpdateMode updateMode
-        {
-            get => m_UpdateMode;
-            set => m_UpdateMode = value;
-        }
-
-        public UnityEvent onAttracted
-        {
-            get => m_OnAttracted;
-            set => m_OnAttracted = value;
-        }
-
-        /// <summary>
-        /// The target ParticleSystem to attract.
-        /// </summary>
-#if UNITY_EDITOR
-        public new ParticleSystem particleSystem
-#else
-        public ParticleSystem particleSystem
-#endif
-        {
-            get => m_ParticleSystem;
-            set
-            {
-                m_ParticleSystem = value;
-                ApplyParticleSystem();
-            }
-        }
-
         private void OnEnable()
         {
-            ApplyParticleSystem();
-            UIParticleUpdater.Register(this);
+            ApplyParticleSystems();
+            UIParticleUpdater.Register(this); // Make sure UIParticleUpdater exists in your project or adjust accordingly
         }
 
         private void OnDisable()
         {
-            UIParticleUpdater.Unregister(this);
+            UIParticleUpdater.Unregister(this); // Adjust according to your project's structure
         }
 
         private void OnDestroy()
         {
-            _uiParticle = null;
-            m_ParticleSystem = null;
+            m_ParticleSystems = null;
         }
 
         internal void Attract()
         {
-            if (m_ParticleSystem == null) return;
-
-            var count = m_ParticleSystem.particleCount;
-            if (count == 0) return;
-
-            var particles = ParticleSystemExtensions.GetParticleArray(count);
-            m_ParticleSystem.GetParticles(particles, count);
-
-            var dstPos = GetDestinationPosition();
-            for (var i = 0; i < count; i++)
+            foreach (var particleSystem in m_ParticleSystems)
             {
-                // Attracted
-                var p = particles[i];
-                if (0f < p.remainingLifetime && Vector3.Distance(p.position, dstPos) < m_DestinationRadius)
-                {
-                    p.remainingLifetime = 0f;
-                    particles[i] = p;
+                if (particleSystem == null) continue;
 
-                    if (m_OnAttracted != null)
+                var count = particleSystem.particleCount;
+                if (count == 0) continue;
+
+                var particles = new ParticleSystem.Particle[count];
+                particleSystem.GetParticles(particles);
+
+                var dstPos = GetDestinationPosition(particleSystem);
+                for (var i = 0; i < count; i++)
+                {
+                    var p = particles[i];
+                    if (0f < p.remainingLifetime && Vector3.Distance(p.position, dstPos) < m_DestinationRadius)
                     {
-                        try
-                        {
-                            m_OnAttracted.Invoke();
-                        }
-                        catch (Exception e)
-                        {
-                            Debug.LogException(e);
-                        }
+                        p.remainingLifetime = 0f;
+                        particles[i] = p;
+                        m_OnAttracted?.Invoke();
+                        continue;
                     }
 
-                    continue;
+                    var delayTime = p.startLifetime * m_DelayRate;
+                    var duration = p.startLifetime - delayTime;
+                    var time = Mathf.Max(0, p.startLifetime - p.remainingLifetime - delayTime);
+
+                    if (time <= 0) continue;
+
+                    p.position = GetAttractedPosition(p.position, dstPos, duration, time, particleSystem);
+                    p.velocity *= 0.5f;
+                    particles[i] = p;
                 }
 
-                // Calc attracting time
-                var delayTime = p.startLifetime * m_DelayRate;
-                var duration = p.startLifetime - delayTime;
-                var time = Mathf.Max(0, p.startLifetime - p.remainingLifetime - delayTime);
-
-                // Delay
-                if (time <= 0) continue;
-
-                // Attract
-                p.position = GetAttractedPosition(p.position, dstPos, duration, time);
-                p.velocity *= 0.5f;
-                particles[i] = p;
+                particleSystem.SetParticles(particles, count);
             }
-
-            m_ParticleSystem.SetParticles(particles, count);
         }
 
-        private Vector3 GetDestinationPosition()
+        private Vector3 GetDestinationPosition(ParticleSystem particleSystem)
         {
-            var isUI = _uiParticle && _uiParticle.enabled;
-            var psPos = m_ParticleSystem.transform.position;
+            var psPos = particleSystem.transform.position;
             var attractorPos = transform.position;
             var dstPos = attractorPos;
-            var isLocalSpace = m_ParticleSystem.IsLocalSpace();
+            var isLocalSpace = particleSystem.main.simulationSpace == ParticleSystemSimulationSpace.Local;
 
             if (isLocalSpace)
             {
-                dstPos = m_ParticleSystem.transform.InverseTransformPoint(dstPos);
-            }
-
-            if (isUI)
-            {
-                var inverseScale = _uiParticle.parentScale.Inverse();
-                var scale3d = _uiParticle.scale3DForCalc;
-                dstPos = dstPos.GetScaled(inverseScale, scale3d.Inverse());
-
-                // Relative mode
-                if (_uiParticle.positionMode == UIParticle.PositionMode.Relative)
-                {
-                    var diff = _uiParticle.transform.position - psPos;
-                    diff.Scale(scale3d - inverseScale);
-                    diff.Scale(scale3d.Inverse());
-                    dstPos += diff;
-                }
-
-#if UNITY_EDITOR
-                if (!Application.isPlaying && !isLocalSpace)
-                {
-                    dstPos += psPos - psPos.GetScaled(inverseScale, scale3d.Inverse());
-                }
-#endif
+                dstPos = particleSystem.transform.InverseTransformPoint(dstPos);
             }
 
             return dstPos;
         }
 
-        private Vector3 GetAttractedPosition(Vector3 current, Vector3 target, float duration, float time)
+        private Vector3 GetAttractedPosition(Vector3 current, Vector3 target, float duration, float time, ParticleSystem particleSystem)
         {
             var speed = m_MaxSpeed;
             switch (m_UpdateMode)
@@ -237,26 +143,10 @@ namespace Coffee.UIExtensions
             return Vector3.MoveTowards(current, target, speed);
         }
 
-        private void ApplyParticleSystem()
+        private void ApplyParticleSystems()
         {
-            _uiParticle = null;
-            if (m_ParticleSystem == null)
-            {
-#if UNITY_EDITOR
-                if (Application.isPlaying)
-#endif
-                {
-                    Debug.LogError("No particle system attached to particle attractor script", this);
-                }
-
-                return;
-            }
-
-            _uiParticle = m_ParticleSystem.GetComponentInParent<UIParticle>(true);
-            if (_uiParticle && !_uiParticle.particles.Contains(m_ParticleSystem))
-            {
-                _uiParticle = null;
-            }
+            // This method could be expanded if there's any initialization needed for each ParticleSystem
+            // For example, linking them with UI particles or other specific setup
         }
     }
 }
