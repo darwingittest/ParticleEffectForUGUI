@@ -20,8 +20,7 @@ namespace Coffee.UIExtensions
             UnscaledTime
         }
 
-        [SerializeField]
-        private ParticleSystem[] m_ParticleSystems;
+        public ParticleSystem[] m_ParticleSystems;
 
         [Range(0.1f, 10f)]
         [SerializeField]
